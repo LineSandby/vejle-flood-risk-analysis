@@ -1,0 +1,104 @@
+---
+title: "Preprocessing BBR data"
+author: "Line Sandby"
+output: html_document
+date: "2026-04-22"
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(sf)
+library(httr)
+library(dplyr)
+```
+```{r create data folder}
+if (!dir.exists("../data")) {
+  dir.create("../data")
+}
+```
+
+```{r define bbr query}
+base_url <- "https://kortservice.vejle.dk/gis/rest/services/OPENDATA/Vejle/MapServer/32/query"
+
+query <- paste0(
+  "Postnr IN (7100,7120,7080) ",
+  "AND byg026OpFoerelsesAar >= 1925 ",
+  "AND byg026OpFoerelsesAar <= 2025"
+)
+```
+```{r download bbr data}
+response <- GET(
+  base_url,
+  query = list(
+    where = query,
+    outFields = "BygningId,byg026OpFoerelsesAar,Vejnavn,HusNr,Postnr",
+    returnGeometry = "true",
+    f = "geojson"
+  ),
+  write_disk(
+    "../data/bbr_vejle_raw.geojson",
+    overwrite = TRUE
+  )
+)
+
+response$status_code
+```
+```{r loading BBR data}
+bbr_vejle <- st_read("../data/bbr_vejle_raw.geojson")
+
+st_crs(bbr_vejle)
+```
+```{r cleaning BBR data}
+bbr_vejle_clean <- bbr_vejle %>%
+  rename(
+    byggeaar = byg026OpFoerelsesAar
+  ) %>%
+  filter(!is.na(byggeaar)) %>%
+  filter(byggeaar != 0) %>%
+  filter(byggeaar >= 1925, byggeaar <= 2025) %>%
+  select(
+    BygningId,
+    byggeaar,
+    Vejnavn,
+    HusNr,
+    Postnr,
+    geometry
+  )
+
+summary(bbr_vejle_clean$byggeaar)
+```
+```{r}
+# checking for missing values
+colSums(
+  is.na(
+    st_drop_geometry(bbr_vejle_clean)
+  )
+)
+```
+```{r}
+# transforming CRS
+bbr_vejle_clean_25832 <- st_transform(
+  bbr_vejle_clean,
+  25832
+)
+
+st_crs(bbr_vejle_clean_25832)
+```
+```{r checking geometry}
+plot(
+  st_geometry(bbr_vejle_clean_25832),
+  pch = 16,
+  cex = 0.3,
+  main = "Cleaned BBR building points in Vejle study area"
+)
+```
+
+```{r saving clean BBR data}
+st_write(
+  bbr_vejle_clean_25832,
+  "../data/bbr_vejle_clean_25832.gpkg",
+  delete_dsn = TRUE
+)
+```
+
+
+

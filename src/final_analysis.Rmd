@@ -1,0 +1,447 @@
+---
+title: "Final Analysis"
+author: "Line Sandby"
+date: "2026-04-30"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(sf)
+library(terra)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+```{r create folders}
+if (!dir.exists("../out")) dir.create("../out")
+if (!dir.exists("../out/maps")) dir.create("../out/maps")
+if (!dir.exists("../out/tables")) dir.create("../out/tables")
+if (!dir.exists("../data")) dir.create("../data")
+```
+```{r loading pre-processed data}
+elevation <- rast("../data/elevation_vejle_masked.tif")
+bbr <- st_read("../data/bbr_vejle_clean_25832.gpkg")
+study_area <- st_read("../data/study_area_vejle_land_25832.gpkg")
+```
+
+```{r transforming data}
+bbr_raster_crs <- st_transform(bbr, crs(elevation))
+study_area_raster_crs <- st_transform(study_area, crs(elevation))
+```
+
+```{r creating flood vulnerability zones}
+risk_matrix <- matrix(
+  c(
+    -Inf, 1, 1,
+    1, 2, 2,
+    2, 3, 3,
+    3, Inf, 4
+  ),
+  ncol = 3,
+  byrow = TRUE
+)
+
+risk_zones <- classify(
+  elevation,
+  rcl = risk_matrix,
+  right = FALSE,
+  include.lowest = TRUE
+)
+
+names(risk_zones) <- "risk_zone"
+
+writeRaster(
+  risk_zones,
+  "../data/flood_vulnerability_zones.tif",
+  overwrite = TRUE
+)
+```
+```{r extracting elevation of buildings}
+extracted_elevation <- terra::extract(
+  elevation,
+  vect(bbr_raster_crs)
+)
+
+bbr_raster_crs$elevation_m <- extracted_elevation[, 2]
+
+summary(bbr_raster_crs$elevation_m)
+```
+```{r assigning vulnerability categories to buildings}
+risk_levels <- c(
+  "Critical flood-prone: <1 m",
+  "High vulnerability: 1-2 m",
+  "Moderate vulnerability: 2-3 m"
+)
+
+bbr_raster_crs <- bbr_raster_crs %>%
+  mutate(
+    risk_category = case_when(
+      is.na(elevation_m) ~ "No elevation data",
+      elevation_m < 1 ~ "Critical flood-prone: <1 m",
+      elevation_m >= 1 & elevation_m < 2 ~ "High vulnerability: 1-2 m",
+      elevation_m >= 2 & elevation_m < 3 ~ "Moderate vulnerability: 2-3 m",
+      elevation_m >= 3 ~ "Lower vulnerability: >3 m",
+      TRUE ~ NA_character_
+    ),
+    in_risk_zone = risk_category %in% risk_levels
+  )
+
+bbr_raster_crs$risk_category <- factor(
+  bbr_raster_crs$risk_category,
+  levels = c(
+    "Critical flood-prone: <1 m",
+    "High vulnerability: 1-2 m",
+    "Moderate vulnerability: 2-3 m",
+    "Lower vulnerability: >3 m",
+    "No elevation data"
+  )
+)
+
+table(bbr_raster_crs$risk_category)
+```
+```{r creating 10 years building periods}
+bbr_raster_crs <- bbr_raster_crs %>%
+  mutate(
+    period_10yr = cut(
+      byggeaar,
+      breaks = c(seq(1925, 2015, by = 10), 2026),
+      right = FALSE,
+      include.lowest = TRUE,
+      labels = c(
+        "1925-1934",
+        "1935-1944",
+        "1945-1954",
+        "1955-1964",
+        "1965-1974",
+        "1975-1984",
+        "1985-1994",
+        "1995-2004",
+        "2005-2014",
+        "2015-2025"
+      )
+    )
+  )
+
+table(bbr_raster_crs$period_10yr)
+```
+
+```{r percentage by vulnerability category and period}
+
+percentage_summary <- bbr_raster_crs %>%
+  st_drop_geometry() %>%
+  filter(!is.na(period_10yr)) %>%
+  mutate(
+    vulnerability_group = case_when(
+      risk_category == "Critical flood-prone: <1 m" ~ "Critical flood-prone: <1 m",
+      risk_category == "High vulnerability: 1-2 m" ~ "High vulnerability: 1-2 m",
+      risk_category == "Moderate vulnerability: 2-3 m" ~ "Moderate vulnerability: 2-3 m",
+      risk_category == "Lower vulnerability: >3 m" ~ "Remaining area",
+      TRUE ~ "No elevation data"
+    )
+  ) %>%
+  count(period_10yr, vulnerability_group, name = "n_buildings") %>%
+  group_by(period_10yr) %>%
+  mutate(
+    total_buildings_period = sum(n_buildings),
+    percentage = round((n_buildings / total_buildings_period) * 100, 2)
+  ) %>%
+  ungroup()
+
+percentage_summary
+
+write.csv(
+  percentage_summary,
+  "../out/tables/percentage_by_vulnerability_category.csv",
+  row.names = FALSE
+)
+```
+
+```{r plotting percentage by vulnerability category}
+
+ggplot(
+  percentage_summary %>%
+    filter(vulnerability_group %in% c(
+      "Critical flood-prone: <1 m",
+      "High vulnerability: 1-2 m",
+      "Moderate vulnerability: 2-3 m"
+    )),
+  aes(
+    x = period_10yr,
+    y = percentage,
+    fill = vulnerability_group
+  )
+) +
+  geom_col(position = "stack") +
+  scale_fill_manual(
+    values = c(
+      "Critical flood-prone: <1 m" = "darkred",
+      "High vulnerability: 1-2 m" = "orange",
+      "Moderate vulnerability: 2-3 m" = "yellow"
+    )
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Percentage of buildings constructed in flood vulnerable zones",
+    subtitle = "Percentages are calculated from all buildings in each 10-year period",
+    x = "Construction period",
+    y = "Percentage of all buildings",
+    fill = "Vulnerability category"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(
+  "../out/tables/percentage_buildings_in_risk_zones_by_category.png",
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+```{r table of vulnerable zones}
+flood_vulnerable_table <- percentage_summary %>%
+  filter(vulnerability_group %in% c(
+    "Critical flood-prone: <1 m",
+    "High vulnerability: 1-2 m",
+    "Moderate vulnerability: 2-3 m"
+  )) %>%
+  group_by(period_10yr) %>%
+  summarise(
+    n_buildings = sum(n_buildings),
+    total_buildings_period = first(total_buildings_period),
+    percentage = round(sum(n_buildings) / first(total_buildings_period) * 100, 2),
+    .groups = "drop"
+  )
+```
+
+
+```{r table of percentage of vulnerable zones}
+flood_vulnerable_percentages <- flood_vulnerable_table %>%
+  select(
+    period_10yr,
+    n_buildings,
+    total_buildings_period,
+    percentage
+  ) %>%
+  rename(
+    `Construction period` = period_10yr,
+    `Buildings in flood vulnerable zones` = n_buildings,
+    `Total buildings in period` = total_buildings_period,
+    `Percentage in flood vulnerable zones` = percentage
+  )
+
+flood_vulnerable_percentages
+
+write.csv(
+  flood_vulnerable_percentages,
+  "../out/tables/flood_vulnerable_percentages_only.csv",
+  row.names = FALSE
+)
+
+```
+```{r converting risk raster to polygon}
+risk_polygons <- as.polygons(
+  risk_zones,
+  dissolve = TRUE,
+  na.rm = TRUE
+)
+
+risk_polygons_sf <- st_as_sf(risk_polygons)
+
+risk_polygons_sf <- risk_polygons_sf %>%
+  mutate(
+    risk_label = case_when(
+      risk_zone == 1 ~ "Critical flood-prone: <1 m",
+      risk_zone == 2 ~ "High vulnerability: 1-2 m",
+      risk_zone == 3 ~ "Moderate vulnerability: 2-3 m",
+      risk_zone == 4 ~ "Lower vulnerability: >3 m"
+    )
+  )
+
+risk_polygons_sf$risk_label <- factor(
+  risk_polygons_sf$risk_label,
+  levels = c(
+    "Critical flood-prone: <1 m",
+    "High vulnerability: 1-2 m",
+    "Moderate vulnerability: 2-3 m",
+    "Lower vulnerability: >3 m"
+  )
+)
+
+risk_polygons_vulnerable_sf <- risk_polygons_sf %>%
+  filter(risk_label %in% risk_levels)
+```
+
+```{r mapping buldings by 10 year periods with risk zones}
+ggplot() +
+  geom_sf(
+    data = study_area_raster_crs,
+    fill = NA,
+    color = "grey70",
+    linewidth = 0.2
+  ) +
+  geom_sf(
+    data = risk_polygons_vulnerable_sf,
+    aes(fill = risk_label),
+    color = NA,
+    alpha = 1
+  ) +
+  geom_sf(
+    data = bbr_raster_crs %>% filter(!is.na(period_10yr)),
+    color = "black",
+    shape = 16,
+    size = 0.05,
+    alpha = 0.6
+  ) +
+  facet_wrap(~ period_10yr, ncol = 4) +
+  scale_fill_manual(
+    values = c(
+      "Critical flood-prone: <1 m" = "darkred",
+      "High vulnerability: 1-2 m" = "orange",
+      "Moderate vulnerability: 2-3 m" = "gold"
+    )
+  ) +
+  theme_void() +
+  labs(
+    title = "Buildings by 10-year construction period",
+    subtitle = "Black points show buildings constructed in each period. Vulnerable zones are shown as transparent overlays.",
+    fill = "Flood vulnerability zone"
+  )
+
+ggsave(
+  "../out/maps/buildings_by_10yr_period_with_risk_zones.png",
+  width = 20,
+  height = 14,
+  dpi = 600
+)
+
+ggsave(
+  "../out/maps/buildings_by_10yr_period_with_risk_zones.pdf",
+  width = 20,
+  height = 14,
+  device = "pdf",
+  bg = "white"
+)
+
+```
+```{r creating 50 year comparison}
+bbr_50yr <- bbr_raster_crs %>%
+  filter(!is.na(byggeaar)) %>%
+  filter(byggeaar >= 1925, byggeaar <= 2025) %>%
+  mutate(
+    period_50yr = case_when(
+      byggeaar >= 1925 & byggeaar <= 1974 ~ "1925-1974",
+      byggeaar >= 1975 & byggeaar <= 2025 ~ "1975-2025"
+    )
+  ) %>%
+  filter(!is.na(period_50yr))
+
+period_comparison <- bbr_50yr %>%
+  st_drop_geometry() %>%
+  group_by(period_50yr) %>%
+  summarise(
+    total_buildings = n(),
+    risk_buildings = sum(in_risk_zone, na.rm = TRUE),
+    risk_share = round(risk_buildings / total_buildings * 100, 2),
+    .groups = "drop"
+  )
+
+period_comparison
+
+write.csv(
+  period_comparison,
+  "../out/tables/risk_share_50_year_comparison.csv",
+  row.names = FALSE
+)
+```
+```{r hexagon map of full study area}
+periods <- tibble(
+  period_50yr = c("1925-1974", "1975-2025")
+)
+
+bbr_hotspot <- bbr_50yr %>%
+  st_transform(25832)
+
+study_area_hotspot <- study_area_raster_crs %>%
+  st_transform(25832) %>%
+  st_make_valid()
+
+hex_grid <- st_make_grid(
+  study_area_hotspot,
+  cellsize = 700,
+  square = FALSE
+) %>%
+  st_as_sf() %>%
+  mutate(hex_id = row_number()) %>%
+  st_filter(study_area_hotspot)
+
+buildings_hex <- st_join(
+  bbr_hotspot,
+  hex_grid["hex_id"],
+  join = st_intersects
+)
+
+hex_summary <- buildings_hex %>%
+  st_drop_geometry() %>%
+  filter(!is.na(hex_id)) %>%
+  group_by(hex_id, period_50yr) %>%
+  summarise(
+    total_buildings = n(),
+    risk_buildings = sum(in_risk_zone, na.rm = TRUE),
+    risk_share = risk_buildings / total_buildings * 100,
+    .groups = "drop"
+  )
+
+hex_all_periods <- hex_grid %>%
+  st_drop_geometry() %>%
+  select(hex_id) %>%
+  tidyr::crossing(periods)
+
+hex_hotspot_data <- hex_all_periods %>%
+  left_join(hex_summary, by = c("hex_id", "period_50yr")) %>%
+  mutate(
+    map_category = case_when(
+      is.na(total_buildings) ~ "No building data",
+      risk_share == 0 ~ "0%",
+      risk_share > 0 ~ "More than 0%"
+    )
+  )
+
+hex_hotspot <- hex_grid %>%
+  left_join(hex_hotspot_data, by = "hex_id")
+
+ggplot(hex_hotspot) +
+  geom_sf(
+    aes(fill = risk_share),
+    color = "grey80",
+    linewidth = 0.05
+  ) +
+  facet_wrap(~ period_50yr) +
+  scale_fill_viridis_c(
+    option = "magma",
+    limits = c(0, 100),
+    na.value = "grey90",
+    name = "% in risk zone"
+  ) +
+  theme_void() +
+  labs(
+    title = "Share of buildings constructed in flood risk zones",
+    subtitle = "Grey hexagons have no building data for the period"
+  )
+
+ggsave(
+  "../out/maps/hex_hotspot_full_study_area.png",
+  width = 12,
+  height = 7,
+  dpi = 300
+)
+
+write.csv(
+  hex_hotspot_data,
+  "../out/tables/hex_hotspot_risk_share.csv",
+  row.names = FALSE
+)
+```
+
+
+
+

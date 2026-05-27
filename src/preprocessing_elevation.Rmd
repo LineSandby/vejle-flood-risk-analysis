@@ -1,0 +1,143 @@
+---
+title: "Preprocessing elevation data"
+author: "Line Sandby"
+output: html_document
+date: "2026-04-29"
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+
+library(sf)
+library(terra)
+library(geodata)
+```
+
+```{r creating folders}
+if (!dir.exists("../data")) {
+  dir.create("../data")
+}
+```
+
+```{r loading study area}
+study_area <- st_read("../data/study_area_vejle_land_25832.gpkg")
+
+study_area <- st_make_valid(study_area)
+
+study_area
+st_crs(study_area)
+```
+
+```{r transforming study area}
+study_area_4326 <- st_transform(study_area, 4326)
+st_crs(study_area_4326)
+```
+
+```{r centering study area}
+study_area_center <- st_centroid(st_union(study_area))
+
+study_area_center_4326 <- st_transform(study_area_center, 4326)
+
+coords <- st_coordinates(study_area_center_4326)
+
+lon <- coords[1]
+lat <- coords[2]
+
+lon
+lat
+```
+
+```{r getting elevation data}
+elevation <- geodata::elevation_3s(
+  lon = lon,
+  lat = lat,
+  path = "../data",
+  mask = FALSE
+)
+
+elevation
+```
+
+```{r cropping and masking elevation data}
+study_area_for_raster <- st_transform(
+  study_area_4326,
+  crs(elevation)
+)
+
+study_area_vect <- vect(study_area_for_raster)
+
+elev_vejle <- crop(
+  elevation,
+  study_area_vect
+)
+
+elev_vejle_mask <- mask(
+  elev_vejle,
+  study_area_vect
+)
+
+elev_vejle_mask
+```
+
+```{r checking elevation values}
+vals <- values(elev_vejle_mask)
+
+summary(vals)
+
+hist(
+  vals[,1],
+  main = "Elevation values in Vejle study area",
+  xlab = "Meters above sea level",
+  col = "grey"
+)
+```
+
+```{r checking NA areas}
+na_layer <- is.na(elev_vejle_mask)
+
+na_only <- classify(
+  na_layer,
+  rcl = matrix(
+    c(
+      0, NA,
+      1, 1
+    ),
+    ncol = 2,
+    byrow = TRUE
+  )
+)
+
+plot(
+  elev_vejle_mask,
+  col = hcl.colors(20, "Terrain"),
+  colNA = "white",
+  main = "Elevation with NA areas"
+)
+
+plot(
+  na_only,
+  add = TRUE,
+  col = rgb(1, 1, 1, 0.9),
+  legend = FALSE
+)
+
+plot(
+  study_area_vect,
+  add = TRUE,
+  border = "black",
+  lwd = 2
+)
+```
+
+```{r saving elevation raster}
+writeRaster(
+  elev_vejle_mask,
+  "../data/elevation_vejle_masked.tif",
+  overwrite = TRUE
+)
+```
+
+
+
+
+
+

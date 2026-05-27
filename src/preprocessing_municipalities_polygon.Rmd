@@ -1,0 +1,117 @@
+---
+title: "Preprocessing study area polygon"
+author: "Line Sandby"
+output: html_document
+date: "2026-04-30"
+---
+
+
+
+```{r setup, message=FALSE, warning=FALSE}
+library(sf)
+library(dplyr)
+library(ggplot2)
+```
+```{r create data folder}
+if (!dir.exists("../data")) {
+  dir.create("../data")
+}
+```
+
+```{r loading postal codes}
+postcodes <- st_read(
+  "https://api.dataforsyningen.dk/postnumre?format=geojson"
+)
+
+st_crs(postcodes)
+```
+```{r filtering study area}
+vejle_postcodes <- postcodes %>%
+  filter(nr %in% c("7100", "7120", "7080")) %>%
+  select(nr, navn, geometry) %>%
+  st_make_valid()
+```
+```{r transforming postcodes}
+vejle_postcodes_25832 <- vejle_postcodes %>%
+  st_transform(25832)
+
+st_crs(vejle_postcodes_25832)
+```
+
+```{r creating combined study area polygon}
+study_area_25832 <- vejle_postcodes_25832 %>%
+  summarise(
+    postcodes = paste(nr, collapse = ", "),
+    geometry = st_union(geometry)
+  ) %>%
+  st_make_valid()
+
+st_is_valid(study_area_25832)
+```
+
+
+```{r loading sea polygon}
+sea_url <- paste0(
+  "https://kortservice2.vejle.dk/arcgis/rest/services/",
+  "GISWEB2/Grundkorttemaer/MapServer/52/query?",
+  "where=1%3D1&outFields=*&returnGeometry=true&f=geojson"
+)
+
+sea <- st_read(sea_url)
+
+sea_25832 <- sea %>%
+  st_zm(drop = TRUE, what = "ZM") %>%
+  st_transform(25832) %>%
+  st_make_valid()
+```
+```{r clipping sea to study area}
+sea_in_study_area <- sea_25832 %>%
+  st_intersection(study_area_25832) %>%
+  st_union() %>%
+  st_as_sf() %>%
+  st_make_valid()
+```
+```{r creating land only study area}
+study_area_land_25832 <- st_difference(
+  study_area_25832,
+  st_union(sea_in_study_area)
+) %>%
+  st_make_valid()
+
+st_is_valid(study_area_land_25832)
+```
+```{r checking final study area}
+ggplot() +
+  geom_sf(
+    data = study_area_25832,
+    fill = "lightblue",
+    color = "grey50"
+  ) +
+  geom_sf(
+    data = sea_in_study_area,
+    fill = "darkblue",
+    color = NA
+  ) +
+  geom_sf(
+    data = study_area_land_25832,
+    fill = NA,
+    color = "red",
+    linewidth = 0.5
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Final study area",
+    subtitle = "Postal codes 7100, 7120 and 7080 with coastal sea area removed"
+  )
+```
+
+
+```{r saving final study area}
+st_write(
+  study_area_land_25832,
+  "../data/study_area_vejle_land_25832.gpkg",
+  delete_dsn = TRUE
+)
+```
+
+
