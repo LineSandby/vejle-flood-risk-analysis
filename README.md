@@ -49,13 +49,6 @@ git clone https://github.com/YOUR_USERNAME/vejle-flood-risk-analysis.git
 
 4. Processed datasets will automatically be saved in the `data/` folder, while generated maps, tables, and figures will be saved in the `out/` folder.
 
-## Usage
-The project can be used to:
-
-- Analyze flood vulnerability using elevation raster data
-- Examine temporal urban development patterns
-- Identify spatial hotspots of flood-prone construction
-
 ## License
 Distributed under the MIT License. See `LICENSE.txt` for more information.
 
@@ -63,21 +56,3 @@ Distributed under the MIT License. See `LICENSE.txt` for more information.
 Line Sandby - 202205032@post.au.dk
 
 Project Link: [https://github.com/YOUR_USERNAME/vejle-flood-risk-analysis](https://github.com/LineSandby/vejle-flood-risk-analysis)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
